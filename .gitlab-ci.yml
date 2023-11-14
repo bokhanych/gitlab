@@ -1,0 +1,56 @@
+#   ADD: Project - Settings - CI/CD Settings - Variables: BACK_PORT, CI_REGISTRY_PASSWORD, CI_REGISTRY_USER, FRONT_PORT, MAIL_DRIVER, MAIL_ENCRYPTION, MAIL_FROM_ADDRESS, MAIL_HOST, MAIL_PASSWORD, MAIL_PORT, MAIL_TO_ADDRESS, MAIL_USERNAME
+stages:
+  - CI
+  - CD
+
+Docker build and push:
+  stage: CI
+  image: docker:latest
+  services:
+    - docker:dind
+  tags:
+    - RUNNER-TEST
+  script:
+    # BUILD IMAGE
+    - docker-compose build
+    # LOGIN TO REGISTRY
+    - docker logout $CI_REGISTRY
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+    # PUSH IMAGES
+    - docker push $CI_REGISTRY/$CI_PROJECT_PATH/GTI-DB:$CI_COMMIT_SHORT_SHA
+    - docker push $CI_REGISTRY/$CI_PROJECT_PATH/GTI-APP:$CI_COMMIT_SHORT_SHA
+    # CLEANING
+    - docker rmi -f $(docker images -a | grep $CI_REGISTRY/$CI_PROJECT_PATH) || { echo 'Failure is allowed' || exit 1; }
+
+Docker pull and start:
+  stage: CD
+  services:
+    - docker:dind
+  tags:
+    - RUNNER-PROD
+  script:
+    # LOGIN TO REGISTRY
+    - docker logout $CI_REGISTRY
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+    # CREATING .env
+    - echo "BACK_PORT=${BACK_PORT}" > .env
+    - echo "FRONT_PORT=${FRONT_PORT}" >> .env
+    - echo "MAIL_DRIVER=${MAIL_DRIVER}" >> .env
+    - echo "MAIL_HOST=${MAIL_HOST}" >> .env
+    - echo "MAIL_PORT=${MAIL_PORT}" >> .env
+    - echo "MAIL_USERNAME=${MAIL_USERNAME}" >> .env
+    - echo "MAIL_PASSWORD=${MAIL_PASSWORD}" >> .env
+    - echo "MAIL_ENCRYPTION=tls" >> .env
+    - echo "MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS}" >> .env
+    - echo "MAIL_TO_ADDRESS=${MAIL_TO_ADDRESS}" >> .env
+    # STOP AND CLEANING OLD APP
+    - docker stop GTI-DB GTI-APP || { echo 'Failure is allowed' || exit 1; }
+    - docker rm GTI-DB GTI-APP -f || { echo 'Failure is allowed' || exit 1; }
+    - docker rmi -f $(docker images -a | grep $CI_REGISTRY/$CI_PROJECT_PATH) || { echo 'Failure is allowed' || exit 1; }
+    # PULL IMAGES AND START NEW APP
+    - docker network create gti || { echo 'Failure is allowed' || exit 1; }
+    - docker run -d --network gti -p ${FRONT_PORT}:${FRONT_PORT} --name GTI-DB --env-file .env $CI_REGISTRY/$CI_PROJECT_PATH/GTI-DB:$CI_COMMIT_SHORT_SHA
+    - docker run -d --network gti -p ${BACK_PORT}:${BACK_PORT} --name GTI-APP --env-file .env $CI_REGISTRY/$CI_PROJECT_PATH/GTI-APP:$CI_COMMIT_SHORT_SHA
+    - rm .env
+
+# Docker fix: https://serverfault.com/questions/1052496/docker-login-to-aws-ecr-from-gitlab-ci-fails-with-dial-tcp-lookup-docker-on-x
